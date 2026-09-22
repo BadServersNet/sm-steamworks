@@ -51,6 +51,40 @@ static void GetGameSpecificConfigInterface(const char *pName, const char *&pVers
 	}
 }
 
+/* Older engine builds (CS:GO's bundled steamclient, for example) only expose older
+   ISteamClient versions. Every ISteamClient method this extension calls sits before the
+   first slot that changed between these versions, and ISteamHTTP is fetched through the
+   version-stable GetISteamGenericInterface, so falling back is safe. */
+static const char *g_SteamClientVersions[] =
+{
+	STEAMCLIENT_INTERFACE_VERSION,
+	"SteamClient020",
+	"SteamClient019",
+	"SteamClient018",
+	"SteamClient017",
+};
+
+static ISteamClient *CreateSteamClient(void *(*pCreateInterface)(const char *))
+{
+	const char *pConfiguredVersion = NULL;
+	GetGameSpecificConfigInterface("SteamClientInterfaceVersion", pConfiguredVersion);
+	if (pConfiguredVersion != NULL)
+	{
+		return static_cast<ISteamClient *>((*pCreateInterface)(pConfiguredVersion));
+	}
+
+	for (size_t i = 0; i < sizeof(g_SteamClientVersions) / sizeof(g_SteamClientVersions[0]); ++i)
+	{
+		ISteamClient *pClient = static_cast<ISteamClient *>((*pCreateInterface)(g_SteamClientVersions[i]));
+		if (pClient != NULL)
+		{
+			return pClient;
+		}
+	}
+
+	return NULL;
+}
+
 SteamWorksGameServer::SteamWorksGameServer()
 {
 	this->Reset();
@@ -118,10 +152,10 @@ ISteamClient *SteamWorksGameServer::GetSteamClient(void)
 		}
 
 		if (pGSInternalCreateAddress != NULL)
-			this->m_pClient = static_cast<ISteamClient *>((*pGSInternalCreateAddress)(STEAMCLIENT_INTERFACE_VERSION));
+			this->m_pClient = CreateSteamClient(pGSInternalCreateAddress);
 		
 		if (this->m_pClient == NULL && pInternalCreateAddress != NULL)
-			this->m_pClient = static_cast<ISteamClient *>((*pInternalCreateAddress)(STEAMCLIENT_INTERFACE_VERSION));
+			this->m_pClient = CreateSteamClient(pInternalCreateAddress);
 	}
 
 	return this->m_pClient;
@@ -152,6 +186,11 @@ ISteamUtils *SteamWorksGameServer::GetUtils(void)
 		const char *pVersion = STEAMUTILS_INTERFACE_VERSION;
 		GetGameSpecificConfigInterface("SteamUtilsInterfaceVersion", pVersion);
 		this->m_pUtils = this->GetSteamClient()->GetISteamUtils(hSteamPipe, pVersion);
+		if (this->m_pUtils == NULL)
+		{
+			/* SteamUtils011 only appends methods to SteamUtils010. */
+			this->m_pUtils = this->GetSteamClient()->GetISteamUtils(hSteamPipe, "SteamUtils010");
+		}
 	}
 	
 	return this->m_pUtils;
@@ -199,7 +238,7 @@ ISteamHTTP *SteamWorksGameServer::GetHTTP(void)
 		
 		const char *pVersion = STEAMHTTP_INTERFACE_VERSION;
 		GetGameSpecificConfigInterface("SteamHTTPInterfaceVersion", pVersion);
-		this->m_pHTTP = this->GetSteamClient()->GetISteamHTTP(hSteamUser, hSteamPipe, pVersion);
+		this->m_pHTTP = static_cast<ISteamHTTP *>(this->GetSteamClient()->GetISteamGenericInterface(hSteamUser, hSteamPipe, pVersion));
 	}
 	
 	return this->m_pHTTP;
